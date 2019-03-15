@@ -1,0 +1,42 @@
+---
+# Select Instance Type to Use
+
+# Get AWS Regions
+
+# Get Spot Price in Each Region for Instance Type
+
+# Find lowest spot price Region
+
+# Create SSH-Key for Region
+
+# Create VPC for Region
+
+# Create Subnet for Region
+
+# Create Security Group for Region
+
+# Launch Spot Instance
+
+# Update DNS
+
+# Wait for Instace to Start
+
+# Software Update
+
+# Git Clone FastAI Code base
+##git clone https://github.com/fastai/course-v3
+
+# Update Conda / Install Packages
+##conda update conda 
+##conda install -c pytorch -c fastai fastai pytorch torchvision cuda92
+
+# Download Datasets/Project  from S3 -If Returning To Work
+
+# Launch jupyter notebook
+##cd course-v3/nbs/dl1
+##jupyter notebook
+
+# Print SSH command to Start work
+# ssh -i ~/.ssh/<your_private_key_pair> -L localhost:8888:localhost:8888 ubuntu@<your instance IP>
+
+
