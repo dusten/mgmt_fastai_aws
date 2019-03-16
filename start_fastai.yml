@@ -1,19 +1,158 @@
 ---
+- hosts: local
 # Select Instance Type to Use
+  vars_prompt:
+  - name: ec2_type
+    prompt: "Which Type of Instance to deploy?\n
+     1- p2.xl   - 1  NVIDIA K80\n
+     2- p2.8xl  - 8  NVIDIA K80\n
+     3- p2.16xl - 16 NVIDIA K80\n
+     4- p3.2xl  - 1 Tesla V100\n
+     5- p3.8xl  - 4 Tesla V100\n
+     6- p3.16xl - 8 Tesla V100\n
+     7- g3s.xl  - 1 Tesla M60 (4vCPU)\n
+     8- g3.4xl  - 1 Tesla M60 (16vCPU)\n
+     10- g3.16xl - 4 Tesla M60\n"
+    private:               "no"
+    default:               "1"
+
+  pre_tasks:
+  - name: Set Instance Type
+    set_fact:
+      fastai_ec2_type:     "p2.xlarge"
+    when:  'ec2_type == "1"'
+
+  - set_fact:
+      fastai_ec2_type:     "p2.8xlarge"
+    when:  'ec2_type == "2"'
+
+  - set_fact:
+      fastai_ec2_type:     "p2.16xlarge"
+    when:  'ec2_type == "3"'
+
+  - set_fact:
+      fastai_ec2_type:     "p3.2xlarge"
+    when:  'ec2_type == "4"'
+
+  - set_fact:
+      fastai_ec2_type:     "p3.8xlarge"
+    when:  'ec2_type == "5"'
+
+  - set_fact:
+      fastai_ec2_type:     "p3.16xlarge"
+    when:  'ec2_type == "6"'
+
+  - set_fact:
+      fastai_ec2_type:     "g3s.xlarge"
+    when:  'ec2_type == "7"'
+
+  - set_fact:
+      fastai_ec2_type:     "g3.4xlarge"
+    when:  'ec2_type == "8"'
+
+  - set_fact:
+      fastai_ec2_type:     "g3.8xlarge"
+    when:  'ec2_type == "9"'
+
+  - set_fact:
+      fastai_ec2_type:     "g3.16xlarge"
+    when:  'ec2_type == "10"'
+
+  tasks:
+  - name: Reset Inventory File
+    copy:
+      content: |
+                [local]
+                localhost ansible_connection=local
+
+                [fastai]
+      dest: inventory
+
+  - name: Setup AWS CLI (1/3)
+    shell: >
+      aws configure set aws_access_key_id "{{ aws_access_key }}"
+
+  - name: Setup AWS CLI (2/3)
+    shell: >
+      aws configure set aws_secret_access_key "{{ aws_secret_key }}"
 
 # Get AWS Regions
+  - name: Getting all Regions
+    aws_region_facts:
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+    register: regions
 
 # Get Spot Price in Each Region for Instance Type
+  - name: Get Spot
+    shell: >
+      aws configure set region "{{ item.region_name }}" && aws ec2 describe-spot-price-history --instance-types "{{ fastai_ec2_type }}" --product-description "Linux/UNIX (Amazon VPC)" --start-time {{ ansible_date_time.iso8601 }}  --end-time {{ ansible_date_time.iso8601 }}
+    register: spot
+    with_items: "{{ regions.regions }}"
+
+  - name: Create Spot Price
+    set_fact: 
+      spot_prices:           "{{ (spot_prices | default([])) + ((item.stdout | from_json).SpotPriceHistory) }}"
+    with_items: "{{ spot.results }}"
+    when: '((item.stdout | from_json).SpotPriceHistory | length)'
+    
+  - name: Debug
+    debug:
+      msg: "{{ (spot_prices | sort(attribute='SpotPrice'))[0] }}"
 
 # Find lowest spot price Region
+  - name: Set fastai Region
+    set_fact:
+      fastai_az:                 "{{ (spot_prices | sort(attribute='SpotPrice'))[0].AvailabilityZone[-1] }}"
+      fastai_region:             "{{ (spot_prices | sort(attribute='SpotPrice'))[0].AvailabilityZone[0:-1] }}"
+
+  - name: Set AWS Region
+    set_fact:
+      aws_region:           "{{ fastai_region }}"
+
+  - name: Setup AWS CLI (3/3)
+    shell: >
+      aws configure set region "{{ aws_region }}"
 
 # Create SSH-Key for Region
+  - name: SSH Creating Key Pair
+    ec2_key:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      name:                 "{{ vpn_keyname }}_{{ aws_region }}_key"
+    register: ec2_key
+
+  - name: Saving EC2 key to local directory
+    copy:
+      content:              "{{ ec2_key.key.private_key }}"
+      dest:                 "./{{ vpn_keyname }}_{{ aws_region }}_key.pem"
+      mode:                 0600
+    when: ec2_key.changed
+
+  - fail:
 
 # Create VPC for Region
 
 # Create Subnet for Region
 
 # Create Security Group for Region
+
+# Find AMI ID
+  - name: Search for all of the AMIs in {{ aws_region }} which match {{ fastai_aim_base }}
+    ec2_ami_facts:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      filters:
+        name:               "{{ fastai_ami_base }}"
+        owner-id:           "{{ fastai_ami_owner }}"
+    register: amifind
+
+  - name: Set fastai_ami ID 
+    set_fact:
+      fast_ami:         "{{ amifind.images[0].image_id }}" 
+
 
 # Launch Spot Instance
 

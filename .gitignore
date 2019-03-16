@@ -1,0 +1,10 @@
+*.retry
+*.pem
+*.output
+*.set
+*.log
+*.diff
+inventory
+vars.yml
+license/*
+output/*.xml

@@ -46,7 +46,7 @@ FastAI_Hosts:
       az:                   "a"}
 
 # What AMI do you want to use for FastAI?
-deeplearning_ami_base:          "Deep Learning AMI*"
-deeplearning_ami_platform:	"Ubuntu"
-deeplearning_ami_owner:         "Amazon images"
-deeplearning_user:              "ubuntu"
+fastai_ami_base:          "Deep Learning AMI*"
+fastai_ami_platform:      "Ubuntu"
+fastai_ami_owner:         "Amazon images"
+fastai_user:              "ubuntu"
