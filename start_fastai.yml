@@ -58,6 +58,14 @@
       fastai_ec2_type:     "g3.16xlarge"
     when:  'ec2_type == "10"'
 
+  - name: Find Public IP Address For SG
+    ipify_facts:
+    register: pub_ip
+    
+  - name: Setting Public IP to usable variable
+    set_fact:
+      my_ip:                "{{ pub_ip.ansible_facts.ipify_public_ip }}"
+
   tasks:
   - name: Reset Inventory File
     copy:
@@ -92,7 +100,7 @@
 
   - name: Create Spot Price
     set_fact: 
-      spot_prices:           "{{ (spot_prices | default([])) + ((item.stdout | from_json).SpotPriceHistory) }}"
+      spot_prices:          "{{ (spot_prices | default([])) + ((item.stdout | from_json).SpotPriceHistory) }}"
     with_items: "{{ spot.results }}"
     when: '((item.stdout | from_json).SpotPriceHistory | length)'
     
@@ -103,8 +111,9 @@
 # Find lowest spot price Region
   - name: Set fastai Region
     set_fact:
-      fastai_az:                 "{{ (spot_prices | sort(attribute='SpotPrice'))[0].AvailabilityZone[-1] }}"
-      fastai_region:             "{{ (spot_prices | sort(attribute='SpotPrice'))[0].AvailabilityZone[0:-1] }}"
+      fastai_az:            "{{ (spot_prices | sort(attribute='SpotPrice'))[0].AvailabilityZone[-1] }}"
+      fastai_region:        "{{ (spot_prices | sort(attribute='SpotPrice'))[0].AvailabilityZone[0:-1] }}"
+      fastai_spot:          "{{ (spot_prices | sort(attribute='SpotPrice'))[0].SpotPrice }}"
 
   - name: Set AWS Region
     set_fact:
@@ -120,62 +129,265 @@
       region:               "{{ aws_region }}"
       aws_access_key:       "{{ aws_access_key }}"
       aws_secret_key:       "{{ aws_secret_key }}"
-      name:                 "{{ vpn_keyname }}_{{ aws_region }}_key"
+      name:                 "{{ ssh_keyname }}_{{ aws_region }}_key"
     register: ec2_key
 
   - name: Saving EC2 key to local directory
     copy:
       content:              "{{ ec2_key.key.private_key }}"
-      dest:                 "./{{ vpn_keyname }}_{{ aws_region }}_key.pem"
+      dest:                 "./{{ ssh_keyname }}_{{ aws_region }}_key.pem"
       mode:                 0600
     when: ec2_key.changed
 
-  - fail:
+# Create VPC and IGW in Region
+  - name: Create {{ vpc_name }} with {{ vpc_cidr }}
+    ec2_vpc_net:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      name:                 "{{ vpc_name }}"
+      cidr_block:           "{{ vpc_cidr }}"
+      resource_tags:
+        Environment:        "{{ env }}"
+        Owner:              "{{ owner }}"
+        Used_for:           "{{ used_for }}"
+      state:                "present"
+    register: VPC
 
-# Create VPC for Region
+  - name: Set VPC ID - {{ VPC.vpc.id }} in variable
+    set_fact:
+      VPC_id:               "{{ VPC.vpc.id }}"
+
+  - name: Create IGW for {{ vpc_name }}
+    ec2_vpc_igw:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      vpc_id:               "{{ VPC_id }}"
+      state:                "present"
+    register: VPC_igw
+
+  - name: Set Internet Gateway ID - {{ VPC_igw.gateway_id }} in variable
+    set_fact:
+      VPC_igw_id:           "{{ VPC_igw.gateway_id }}"
+
+  - name: Tagging IGW resource with {{ vpc_name }}_igw tag
+    ec2_tag:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      resource:             "{{ VPC_igw_id }}"
+      state:                "present"
+      tags:
+        Name:               "{{ vpc_name }}_igw"
+        Environment:        "{{ env }}"
+        Owner:              "{{ owner }}"
+        Used_for:           "{{ used_for }}"
 
 # Create Subnet for Region
+  - name: Create {{ vpc_name }} Subnet
+    ec2_vpc_subnet:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      vpc_id:               "{{ VPC_id }}"
+      cidr:                 "{{ item.subnet }}"
+      az:                   "{{ aws_region }}{{ item.az }}"
+      state:                "present"
+      resource_tags:
+        Name:               "{{ vpc_name }}_{{ item.az }}_{{ item.interface }}"
+        Environment:        "{{ env }}"
+        Owner:              "{{ owner }}"
+        Used_for:           "{{ used_for }}"
+        Interface:          "{{ item.interface }}"
+    with_items: "{{ vpc_subnet }}"
+    register: VPC_subnets
+    when: 'item.az == fastai_az'
+
+  - name: Append returned to list subnet_ids
+    set_fact:
+      VPC_subnet_ids:       "{{ (VPC_subnet_ids | default([])) + [ item.subnet.id ] }}"
+    with_items: "{{ VPC_subnets.results }}"
+    when: 'item.subnet is defined'
+
+  - name: Set up {{ vpc_name }} route table
+    ec2_vpc_route_table:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      vpc_id:               "{{ VPC_id }}"
+      tags:
+        Name:               "{{ vpc_name }}"
+        Environment:        "{{ env }}"
+        Owner:              "{{ owner }}"
+        Used_for:           "{{ used_for }}"
+      subnets:
+        "{{ VPC_subnet_ids }}"
+      routes:
+        - dest:           "0.0.0.0/0"
+          gateway_id:     "{{ VPC_igw_id }}"
 
 # Create Security Group for Region
+  - name: Get Security FastAI Group ID
+    ec2_group:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      name:                 "{{ vpc_name }}_ext_sg"
+      description:          "{{ vpc_name }} External SSH Access"
+      vpc_id:               "{{ VPC_id }}"
+    register: ec2_sg
+  
+  - name: Set VPC U SG ID
+    set_fact:
+      VPC_sg_id:          "{{ ec2_sg.group_id }}"
+
+  - name: Update Main Security Group U
+    ec2_group:
+      name:                 "{{ vpc_name }}_ext_sg"
+      description:          "{{ vpc_name }} External SSH Access"
+      vpc_id:               "{{ VPC_id }}"
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      rules:
+      - proto:              "all"
+        cidr_ip:            "{{ my_ip }}/32"
+
+  - name: Tagging Security Group with Environment
+    ec2_tag:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      resource:             "{{ VPC_sg_id }}"
+      state:                "present"
+      tags:
+        Environment:        "{{ env }}"
+        Name:               "{{ vpc_name }}_ext_sg"
+        Owner:              "{{ owner }}"
+        Used_for:           "{{ used_for }}"
 
 # Find AMI ID
-  - name: Search for all of the AMIs in {{ aws_region }} which match {{ fastai_aim_base }}
+  - name: Search for all of the AMIs in {{ aws_region }} which match {{ fastai_ami_base }}
     ec2_ami_facts:
       region:               "{{ aws_region }}"
       aws_access_key:       "{{ aws_access_key }}"
       aws_secret_key:       "{{ aws_secret_key }}"
       filters:
         name:               "{{ fastai_ami_base }}"
-        owner-id:           "{{ fastai_ami_owner }}"
+        owner-alias:        "{{ fastai_ami_owner }}"
     register: amifind
 
   - name: Set fastai_ami ID 
     set_fact:
-      fast_ami:         "{{ amifind.images[0].image_id }}" 
-
+      fastai_ami:             "{{ (amifind.images | sort(attribute='creation_date'))[-1].image_id }}" 
 
 # Launch Spot Instance
+  - name: Launching FastAI Instances
+    ec2:
+      region:               "{{ aws_region }}"
+      aws_access_key:       "{{ aws_access_key }}"
+      aws_secret_key:       "{{ aws_secret_key }}"
+      spot_price:           "{{ ((fastai_spot|float + 0.02) | round(5,'ceil')) }}"
+      spot_type:            "one-time"
+      spot_launch_group:    "fastai_{{ fastai_az }}"
+      instance_type:        "{{ fastai_ec2_type }}"
+      image:                "{{ fastai_ami }}"
+      keypair:              "{{ ssh_keyname }}_{{ aws_region }}_key"
+      count:                1
+      vpc_subnet_id:        "{{ VPC_subnet_ids[0] }}"
+      group_id:             "{{ VPC_sg_id }}"
+      volumes:              "{{ volumes_fastai }}"
+      assign_public_ip:     "yes"
+      wait:                 "yes"
+      instance_tags:
+        Name:               "{{ FastAI_Name }}"
+        Environment:        "{{ env }}"
+        Owner:              "{{ owner }}"
+        Used_for:           "{{ used_for }}"
+    register: fastai_instances
+
+  - name: Instance IDs for Contrail Controllers
+    set_fact:
+      fastai_host:
+        name:               "{{ item.instances[0].tags.Name }}"
+        id:                 "{{ item.instances[0].id }}"
+        public_ip:          "{{ item.instances[0].public_ip }}"
+        private_ip:         "{{ item.instances[0].private_ip }}"
+    with_items: "{{ fastai_instances.results }}"
 
 # Update DNS
+  - name: Create Production EC2 Forward DNS records
+    route53:
+      command:              "create"
+      zone:                 "{{ domain_name }}"
+      overwrite:            "yes"
+      record:               "{{ item.name }}.{{ domain_name }}"
+      type:                 "A"
+      value:                "{{ item.public_ip }}"
+      ttl:                  "60"
+    with_items: "{{ fastai_host }}"
+
+# Update Inventory File
+  - name: Add Contrail Controllers to Invtory File
+    lineinfile:
+      dest:                 "./inventory"
+      insertafter:          '\[fastai\]'
+      line:                 "{{ item.name }} ansible_ssh_private_key_file=./{{ ssh_keyname }}_{{ aws_region }}_key.pem ansible_ssh_user={{ fastai_user }} ansible_ssh_host={{ item.public_ip }} ansible_ssh_port=22 private_ip={{ item.private_ip }}"
+    with_items: "{{ fastai_host }}"
 
 # Wait for Instace to Start
+- name: Refreshing Inventory
+  hosts: local
+  tasks:
+  - meta: refresh_inventory
+  
+- name: Configure FastAI Host
+  hosts: fastai
+  gather_facts: no
+
+  tasks:
+  - name: Wait for port 22 to be ready
+    local_action: wait_for port=22 host="{{ ansible_ssh_host }}"  search_regex=OpenSSH delay=15 timeout=600 sleep=5
+
+  - name: Set Hostname
+    hostname:
+      name:                 "{{ inventory_hostname }}"
+    become:                 "yes"
+    become_method:          "sudo"
 
 # Software Update
+  - name: Upgrade all packages to the latest version
+    apt:
+      name:                 "*"
+      state:                "latest"
+      update_cache:         "yes"
+    become:                 "yes"
+    become_method:          "sudo"
 
 # Git Clone FastAI Code base
-##git clone https://github.com/fastai/course-v3
+  - git:
+      repo:                 "https://github.com/fastai/course-v3"
+      dest:                 "~/course-v3"
 
 # Update Conda / Install Packages
-##conda update conda 
-##conda install -c pytorch -c fastai fastai pytorch torchvision cuda92
+  - name: Update Conda
+    shell: >
+      "conda update conda"
 
-# Download Datasets/Project  from S3 -If Returning To Work
+  - name: Insall Conda Packages
+    shell: >
+      "conda install -c pytorch -c fastai fastai pytorch torchvision cuda92"
+
+# Download Datasets/Project  from S3 -If Returning To Work-
 
 # Launch jupyter notebook
 ##cd course-v3/nbs/dl1
 ##jupyter notebook
 
 # Print SSH command to Start work
-# ssh -i ~/.ssh/<your_private_key_pair> -L localhost:8888:localhost:8888 ubuntu@<your instance IP>
+  - name: How to Connect
+    debug:
+      msg: "ssh -i ./{{ ssh_keyname }}_{{ aws_region }}_key.pem -L localhost:8888:localhost:8888 ubuntu@fastai.{{ domain_name }}"
 
 

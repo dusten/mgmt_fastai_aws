@@ -5,22 +5,22 @@ aws_secret_key:             ""
 domain_name:                "cloudconnector.io"
 
 #SSH keys AWS 
-vpn_keyname:                "fastai_aws"
+ssh_keyname:                "fastai_aws"
 
 # Owner Name
 owner:                      "dsplan"
 
 # Special
-used_for:                   "development"
+used_for:                   "deeplearning"
 
 # AWS Environment Tag
 env:                        "FastAI"
 
 # VPC for Fast AI Information
-vpc_name_A:                 "FastAI"
-vpc_cidr_A:                 "10.1.0.0/16"
-vpc_zone_A:                 "10.1.in-addr.arpa"
-vpc_subnet_A:
+vpc_name:                 "FastAI"
+vpc_cidr:                 "10.1.0.0/16"
+vpc_zone:                 "10.1.in-addr.arpa"
+vpc_subnet:
   - { az:                   "a",
       subnet:               "10.1.1.0/24",
       interface:            "generic" }
@@ -41,12 +41,15 @@ vpc_subnet_A:
       interface:            "generic" }
 
 # FastAI HOST
-FastAI_Hosts:
-  - { fastai_name:        "fastai",
-      az:                   "a"}
+FastAI_Name:                "fastai"
 
 # What AMI do you want to use for FastAI?
-fastai_ami_base:          "Deep Learning AMI*"
-fastai_ami_platform:      "Ubuntu"
-fastai_ami_owner:         "Amazon images"
+fastai_ami_base:          "Deep Learning AMI (Ubuntu)*"
+fastai_ami_owner:         "amazon"
 fastai_user:              "ubuntu"
+
+volumes_fastai:
+  - device_name:                "/dev/sda1"
+    volume_type:                "gp2"
+    volume_size:                "300"
+    delete_on_termination:      "true"
