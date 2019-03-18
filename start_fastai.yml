@@ -307,7 +307,7 @@
         Used_for:           "{{ used_for }}"
     register: fastai_instances
 
-  - name: Instance IDs for Contrail Controllers
+  - name: Instance IDs for FastAI
     set_fact:
       fastai_host:
         name:               "{{ item.instances[0].tags.Name }}"
