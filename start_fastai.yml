@@ -14,7 +14,7 @@
      8- g3.4xl  - 1 Tesla M60 (16vCPU)\n
      10- g3.16xl - 4 Tesla M60\n"
     private:               "no"
-    default:               "1"
+    default:               "0"
 
   pre_tasks:
   - name: Set Instance Type
@@ -58,6 +58,10 @@
       fastai_ec2_type:     "g3.16xlarge"
     when:  'ec2_type == "10"'
 
+  - set_fact:
+      fastai_ec2_type:     "t3.medium"
+    when:  'ec2_type == "0"'
+
   - name: Find Public IP Address For SG
     ipify_facts:
     register: pub_ip
@@ -73,7 +77,7 @@
                 [local]
                 localhost ansible_connection=local
 
-                [fastai]
+                [fastai_host]
       dest: inventory
 
   - name: Setup AWS CLI (1/3)
@@ -282,13 +286,18 @@
     set_fact:
       fastai_ami:             "{{ (amifind.images | sort(attribute='creation_date'))[-1].image_id }}" 
 
+  - name: Confirm Instance Launch
+    pause:
+      prompt: "Starting Instance in {{ fastai_region }} for {{ ((fastai_spot|float + 0.001) | round(5,'ceil')) }}."
+      seconds: 10
+
 # Launch Spot Instance
   - name: Launching FastAI Instances
     ec2:
       region:               "{{ aws_region }}"
       aws_access_key:       "{{ aws_access_key }}"
       aws_secret_key:       "{{ aws_secret_key }}"
-      spot_price:           "{{ ((fastai_spot|float + 0.02) | round(5,'ceil')) }}"
+      spot_price:           "{{ ((fastai_spot|float + 0.001) | round(5,'ceil')) }}"
       spot_type:            "one-time"
       spot_launch_group:    "fastai_{{ fastai_az }}"
       instance_type:        "{{ fastai_ec2_type }}"
@@ -310,11 +319,10 @@
   - name: Instance IDs for FastAI
     set_fact:
       fastai_host:
-        name:               "{{ item.instances[0].tags.Name }}"
-        id:                 "{{ item.instances[0].id }}"
-        public_ip:          "{{ item.instances[0].public_ip }}"
-        private_ip:         "{{ item.instances[0].private_ip }}"
-    with_items: "{{ fastai_instances.results }}"
+      - name:               "{{ fastai_instances.instances[0].tags.Name }}"
+        id:                 "{{ fastai_instances.instances[0].id }}"
+        public_ip:          "{{ fastai_instances.instances[0].public_ip }}"
+        private_ip:         "{{ fastai_instances.instances[0].private_ip }}"
 
 # Update DNS
   - name: Create Production EC2 Forward DNS records
@@ -329,10 +337,10 @@
     with_items: "{{ fastai_host }}"
 
 # Update Inventory File
-  - name: Add Contrail Controllers to Invtory File
+  - name: Add FastAI to Invtory File
     lineinfile:
       dest:                 "./inventory"
-      insertafter:          '\[fastai\]'
+      insertafter:          '\[fastai_host\]'
       line:                 "{{ item.name }} ansible_ssh_private_key_file=./{{ ssh_keyname }}_{{ aws_region }}_key.pem ansible_ssh_user={{ fastai_user }} ansible_ssh_host={{ item.public_ip }} ansible_ssh_port=22 private_ip={{ item.private_ip }}"
     with_items: "{{ fastai_host }}"
 
@@ -343,7 +351,7 @@
   - meta: refresh_inventory
   
 - name: Configure FastAI Host
-  hosts: fastai
+  hosts: fastai_host
   gather_facts: no
 
   tasks:
@@ -356,15 +364,6 @@
     become:                 "yes"
     become_method:          "sudo"
 
-# Software Update
-  - name: Upgrade all packages to the latest version
-    apt:
-      name:                 "*"
-      state:                "latest"
-      update_cache:         "yes"
-    become:                 "yes"
-    become_method:          "sudo"
-
 # Git Clone FastAI Code base
   - git:
       repo:                 "https://github.com/fastai/course-v3"
@@ -372,12 +371,78 @@
 
 # Update Conda / Install Packages
   - name: Update Conda
-    shell: >
-      "conda update conda"
+    shell: "source $HOME/.bashrc && conda update -y conda"
+    args:
+      executable: "/bin/bash"
 
   - name: Insall Conda Packages
-    shell: >
-      "conda install -c pytorch -c fastai fastai pytorch torchvision cuda92"
+    shell: "source $HOME/.bashrc && conda install -y -c pytorch -c fastai fastai pytorch torchvision cuda92"
+    args:
+      executable: "/bin/bash"
+
+  - name: Uninsall Conda Packages
+    shell: "source $HOME/.bashrc && conda uninstall -y --force jpeg libtiff"
+    args:
+      executable: "/bin/bash"
+
+  - name: Insall Conda Packages
+    shell: "source $HOME/.bashrc && conda install -y -c conda-forge libjpeg-turbo"
+    args:
+      executable: "/bin/bash"
+      
+  - name: Insall Conda Packages with cc -mavx2
+    shell: "source $HOME/.bashrc && CC=\"cc -mavx2\" pip install --no-cache-dir -U --force-reinstall --no-binary :all: --compile pillow-simd"
+    args:
+      executable: "/bin/bash"
+
+  - name: Upgrade PIP and Setuptools
+    pip:
+      name:
+        - pip
+        - setuptools
+        - jinja2
+      extra_args:           "--upgrade"
+    become:                 "yes"
+    become_method:          "sudo"
+
+# Install Aptitude
+  - name: Ensure update-manager-core is installed.
+    apt:
+      name:                 "aptitude"
+      state:                "present"
+    become:                 "yes"
+    become_method:          "sudo"
+
+# Software Update
+  - name: Upgrade all packages to the latest version
+    apt:
+      update_cache:         "yes" 
+      upgrade:              "full"
+    become:                 "yes"
+    become_method:          "sudo"
+
+  - name: Rebooting Controllers to Apply updates
+    reboot:
+      msg:                  "Rebooting To Apply Updates -- Ansible"
+    become:                 "yes"
+    become_method:          "sudo"
+
+  - name: Wait for port 22 to be ready
+    local_action: wait_for port=22 host="{{ ansible_ssh_host }}"  search_regex=OpenSSH delay=5 timeout=600 sleep=5
+
+  - name: Run do-release-upgrade non-interactively.
+    shell: "do-release-upgrade -f DistUpgradeViewNonInteractive"
+    become:                 "yes"
+    become_method:          "sudo"
+
+  - name: Rebooting Controllers to Apply updates
+    reboot:
+      msg:                  "Rebooting To Apply Updates -- Ansible"
+    become:                 "yes"
+    become_method:          "sudo"
+
+  - name: Wait for port 22 to be ready
+    local_action: wait_for port=22 host="{{ ansible_ssh_host }}"  search_regex=OpenSSH delay=5 timeout=600 sleep=5
 
 # Download Datasets/Project  from S3 -If Returning To Work-
 
@@ -388,6 +453,4 @@
 # Print SSH command to Start work
   - name: How to Connect
     debug:
-      msg: "ssh -i ./{{ ssh_keyname }}_{{ aws_region }}_key.pem -L localhost:8888:localhost:8888 ubuntu@fastai.{{ domain_name }}"
-
-
+      msg: "ssh -i ./{{ ssh_keyname }}_{{ hostvars['localhost']['aws_region'] }}_key.pem -L localhost:8888:localhost:8888 ubuntu@fastai.{{ domain_name }}"
