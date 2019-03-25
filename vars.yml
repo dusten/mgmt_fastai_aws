@@ -44,12 +44,14 @@ vpc_subnet:
 FastAI_Name:                "fastai"
 
 # What AMI do you want to use for FastAI?
-fastai_ami_base:          "Deep Learning AMI (Ubuntu)*"
-fastai_ami_owner:         "amazon"
-fastai_user:              "ubuntu"
+#fastai_ami_base:            "Deep Learning AMI (Amazon Linux 2)*"
+fastai_ami_base:            "Deep Learning AMI (Ubuntu)*"
+fastai_ami_owner:           "amazon"
+#fastai_user:                "ec2-user"
+fastai_user:                "ubuntu"
 
 volumes_fastai:
-  - device_name:                "/dev/sda1"
-    volume_type:                "gp2"
-    volume_size:                "300"
-    delete_on_termination:      "true"
+  - device_name:            "/dev/sda1"
+    volume_type:            "gp2"
+    volume_size:            "300"
+    delete_on_termination:  "true"

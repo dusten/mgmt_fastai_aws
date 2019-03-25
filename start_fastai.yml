@@ -16,6 +16,13 @@
     private:               "no"
     default:               "0"
 
+  - name: ebsopt
+    prompt: "Do you want to use an EBS optimized Instance?\n
+     0- No \n
+     1- Yes \n"
+    private:               "no"
+    default:               "0"
+
   pre_tasks:
   - name: Set Instance Type
     set_fact:
@@ -59,8 +66,16 @@
     when:  'ec2_type == "10"'
 
   - set_fact:
-      fastai_ec2_type:     "t3.medium"
+      fastai_ec2_type:     "t3.large"
     when:  'ec2_type == "0"'
+
+  - set_fact:
+      ebs_opt:     "no"
+    when:  'ebsopt == "0"'
+
+  - set_fact:
+      ebs_opt:     "yes"
+    when:  'ebsopt == "1"'
 
   - name: Find Public IP Address For SG
     ipify_facts:
@@ -306,6 +321,7 @@
       count:                1
       vpc_subnet_id:        "{{ VPC_subnet_ids[0] }}"
       group_id:             "{{ VPC_sg_id }}"
+      ebs_optimized:        "{{ ebs_opt }}"
       volumes:              "{{ volumes_fastai }}"
       assign_public_ip:     "yes"
       wait:                 "yes"
@@ -356,7 +372,7 @@
 
   tasks:
   - name: Wait for port 22 to be ready
-    local_action: wait_for port=22 host="{{ ansible_ssh_host }}"  search_regex=OpenSSH delay=15 timeout=600 sleep=5
+    local_action: wait_for port=22 host="{{ ansible_ssh_host }}"  search_regex=OpenSSH delay=3 timeout=600 sleep=5
 
   - name: Set Hostname
     hostname:
@@ -400,49 +416,31 @@
       name:
         - pip
         - setuptools
-        - jinja2
+      state:                "latest"
       extra_args:           "--upgrade"
     become:                 "yes"
     become_method:          "sudo"
 
-# Install Aptitude
-  - name: Ensure update-manager-core is installed.
+  - name: Install PIP Modules
+    pip:
+      name:
+        - environment_kernels
+        - ipyparallel
+      state:                "latest"
+
+  - name: Adding Repository
+    apt_repository:
+      repo:                 "ppa:jonathonf/ffmpeg-4"
+    become:                 "yes"
+    become_method:          "sudo"
+
+  - name: Install ffmpeg.
     apt:
-      name:                 "aptitude"
-      state:                "present"
+      name:                 "ffmpeg"
+      state:                "latest"
     become:                 "yes"
     become_method:          "sudo"
 
-# Software Update
-  - name: Upgrade all packages to the latest version
-    apt:
-      update_cache:         "yes" 
-      upgrade:              "full"
-    become:                 "yes"
-    become_method:          "sudo"
-
-  - name: Rebooting Controllers to Apply updates
-    reboot:
-      msg:                  "Rebooting To Apply Updates -- Ansible"
-    become:                 "yes"
-    become_method:          "sudo"
-
-  - name: Wait for port 22 to be ready
-    local_action: wait_for port=22 host="{{ ansible_ssh_host }}"  search_regex=OpenSSH delay=5 timeout=600 sleep=5
-
-  - name: Run do-release-upgrade non-interactively.
-    shell: "do-release-upgrade -f DistUpgradeViewNonInteractive"
-    become:                 "yes"
-    become_method:          "sudo"
-
-  - name: Rebooting Controllers to Apply updates
-    reboot:
-      msg:                  "Rebooting To Apply Updates -- Ansible"
-    become:                 "yes"
-    become_method:          "sudo"
-
-  - name: Wait for port 22 to be ready
-    local_action: wait_for port=22 host="{{ ansible_ssh_host }}"  search_regex=OpenSSH delay=5 timeout=600 sleep=5
 
 # Download Datasets/Project  from S3 -If Returning To Work-
 
@@ -453,4 +451,4 @@
 # Print SSH command to Start work
   - name: How to Connect
     debug:
-      msg: "ssh -i ./{{ ssh_keyname }}_{{ hostvars['localhost']['aws_region'] }}_key.pem -L localhost:8888:localhost:8888 ubuntu@fastai.{{ domain_name }}"
+      msg: "ssh -i ./{{ ssh_keyname }}_{{ hostvars['localhost']['aws_region'] }}_key.pem -L localhost:8888:localhost:8888 {{ fastai_user }}@fastai.{{ domain_name }}"
