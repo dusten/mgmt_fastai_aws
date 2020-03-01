@@ -12,7 +12,8 @@
      6- p3.16xl - 8 Tesla V100\n
      7- g3s.xl  - 1 Tesla M60 (4vCPU)\n
      8- g3.4xl  - 1 Tesla M60 (16vCPU)\n
-     10- g3.16xl - 4 Tesla M60\n"
+     10- g3.16xl - 4 Tesla M60\n
+     11- g4dn.xlarge"
     private:               "no"
     default:               "0"
 
@@ -66,7 +67,7 @@
     when:  'ec2_type == "10"'
 
   - set_fact:
-      fastai_ec2_type:     "t3.large"
+      fastai_ec2_type:     "g4dn.xlarge"
     when:  'ec2_type == "0"'
 
   - set_fact:
