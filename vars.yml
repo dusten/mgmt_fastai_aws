@@ -2,13 +2,13 @@
 aws_access_key:             "" 
 aws_secret_key:             ""
 
-domain_name:                "cloudconnector.io"
+domain_name:                ""
 
 #SSH keys AWS 
 ssh_keyname:                "fastai_aws"
 
 # Owner Name
-owner:                      "dsplan"
+owner:                      ""
 
 # Special
 used_for:                   "deeplearning"
@@ -45,13 +45,19 @@ FastAI_Name:                "fastai"
 
 # What AMI do you want to use for FastAI?
 #fastai_ami_base:            "Deep Learning AMI (Amazon Linux 2)*"
-fastai_ami_base:            "Deep Learning AMI (Ubuntu)*"
+fastai_ami_base:            "Deep Learning AMI (Ubuntu 16*"
 fastai_ami_owner:           "amazon"
 #fastai_user:                "ec2-user"
 fastai_user:                "ubuntu"
 
+# Instance Store mount point
+ephemeral_devices:          "/dev/nvme1n1"
+
 volumes_fastai:
   - device_name:            "/dev/sda1"
     volume_type:            "gp2"
-    volume_size:            "300"
+    volume_size:            "150"
     delete_on_termination:  "true"
+  - device_name:            "/dev/xvdb"
+    volume_type:            "ephemeral"
+    ephemeral:              "ephemeral0"
