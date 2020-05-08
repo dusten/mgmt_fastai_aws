@@ -1,86 +1,11 @@
 ---
 - hosts: local
-# Select Instance Type to Use
-  vars_prompt:
-  - name: ec2_type
-    prompt: "Which Type of Instance to deploy?\n
-     1- p2.xl   - 1  NVIDIA K80\n
-     2- p2.8xl  - 8  NVIDIA K80\n
-     3- p2.16xl - 16 NVIDIA K80\n
-     4- p3.2xl  - 1 Tesla V100\n
-     5- p3.8xl  - 4 Tesla V100\n
-     6- p3.16xl - 8 Tesla V100\n
-     7- g3s.xl  - 1 Tesla M60 (4vCPU)\n
-     8- g3.4xl  - 1 Tesla M60 (16vCPU)\n
-     10- g3.16xl - 4 Tesla M60\n
-     11- g4dn.xlarge"
-    private:               "no"
-    default:               "0"
-
-  - name: ebsopt
-    prompt: "Do you want to use an EBS optimized Instance?\n
-     0- No \n
-     1- Yes \n"
-    private:               "no"
-    default:               "0"
-
-  pre_tasks:
-  - name: Set Instance Type
-    set_fact:
-      fastai_ec2_type:     "p2.xlarge"
-    when:  'ec2_type == "1"'
-
-  - set_fact:
-      fastai_ec2_type:     "p2.8xlarge"
-    when:  'ec2_type == "2"'
-
-  - set_fact:
-      fastai_ec2_type:     "p2.16xlarge"
-    when:  'ec2_type == "3"'
-
-  - set_fact:
-      fastai_ec2_type:     "p3.2xlarge"
-    when:  'ec2_type == "4"'
-
-  - set_fact:
-      fastai_ec2_type:     "p3.8xlarge"
-    when:  'ec2_type == "5"'
-
-  - set_fact:
-      fastai_ec2_type:     "p3.16xlarge"
-    when:  'ec2_type == "6"'
-
-  - set_fact:
-      fastai_ec2_type:     "g3s.xlarge"
-    when:  'ec2_type == "7"'
-
-  - set_fact:
-      fastai_ec2_type:     "g3.4xlarge"
-    when:  'ec2_type == "8"'
-
-  - set_fact:
-      fastai_ec2_type:     "g3.8xlarge"
-    when:  'ec2_type == "9"'
-
-  - set_fact:
-      fastai_ec2_type:     "g3.16xlarge"
-    when:  'ec2_type == "10"'
-
-  - set_fact:
-      fastai_ec2_type:     "g4dn.xlarge"
-    when:  'ec2_type == "0"'
-
-  - set_fact:
-      ebs_opt:     "no"
-    when:  'ebsopt == "0"'
-
-  - set_fact:
-      ebs_opt:     "yes"
-    when:  'ebsopt == "1"'
-
+  tasks:
   - name: Find Public IP Address For SG
     ipify_facts:
     register: pub_ip
+    delay: 10
+    until: pub_ip is not failed
     
   - name: Setting Public IP to usable variable
     set_fact:
@@ -94,19 +19,41 @@
     shell: >
       aws configure set aws_secret_access_key "{{ aws_secret_key }}"
 
-  tasks:
+  - name: Setup AWS CLI (3/3)
+    shell: >
+      aws configure set region "us-east-1"
+
+# Select Instance Type to Use
+  - name: Define Instance Type
+    set_fact:
+      fastai_ec2_type:     "g4dn.xlarge"
+
   - name: Reset Inventory File
     copy:
       content: |
                 [local]
-                localhost ansible_connection=local
+                localhost ansible_host=localhost ansible_connection=local ansible_python_interpreter=/usr/bin/python3
 
                 [fastai_host]
       dest: inventory
 
+  - name: Remove Knownhosts Lines
+    known_hosts:
+      path:                 "~/.ssh/known_hosts"
+      name:                 "fastai.{{ domain_name }}"
+      state:                "absent"
+
+# Get Python Facts
+  - name: Get Python Facts
+    python_requirements_info:
+      dependencies:
+      - botocore
+      - boto3
+      - boto
+
 # Get AWS Regions
   - name: Getting all Regions
-    aws_region_facts:
+    aws_region_info:
       aws_access_key:       "{{ aws_access_key }}"
       aws_secret_key:       "{{ aws_secret_key }}"
     register: regions
@@ -289,7 +236,7 @@
 
 # Find AMI ID
   - name: Search for all of the AMIs in {{ aws_region }} which match {{ fastai_ami_base }}
-    ec2_ami_facts:
+    ec2_ami_info:
       region:               "{{ aws_region }}"
       aws_access_key:       "{{ aws_access_key }}"
       aws_secret_key:       "{{ aws_secret_key }}"
@@ -317,12 +264,13 @@
       spot_type:            "one-time"
       spot_launch_group:    "fastai_{{ fastai_az }}"
       instance_type:        "{{ fastai_ec2_type }}"
+      instance_initiated_shutdown_behavior: "terminate"
       image:                "{{ fastai_ami }}"
       keypair:              "{{ ssh_keyname }}_{{ aws_region }}_key"
-      count:                1
+      count:                "1"
       vpc_subnet_id:        "{{ VPC_subnet_ids[0] }}"
       group_id:             "{{ VPC_sg_id }}"
-      ebs_optimized:        "{{ ebs_opt }}"
+      ebs_optimized:        "0"
       volumes:              "{{ volumes_fastai }}"
       assign_public_ip:     "yes"
       wait:                 "yes"
@@ -358,7 +306,7 @@
     lineinfile:
       dest:                 "./inventory"
       insertafter:          '\[fastai_host\]'
-      line:                 "{{ item.name }} ansible_ssh_private_key_file=./{{ ssh_keyname }}_{{ aws_region }}_key.pem ansible_ssh_user={{ fastai_user }} ansible_ssh_host={{ item.public_ip }} ansible_ssh_port=22 private_ip={{ item.private_ip }}"
+      line:                 "{{ item.name }} ansible_ssh_private_key_file=./{{ ssh_keyname }}_{{ aws_region }}_key.pem ansible_ssh_user={{ fastai_user }} ansible_ssh_host={{ item.public_ip }} ansible_ssh_port=22 private_ip={{ item.private_ip }} ansible_python_interpreter=/usr/bin/python3"
     with_items: "{{ fastai_host }}"
 
 # Wait for Instace to Start
@@ -381,10 +329,112 @@
     become:                 "yes"
     become_method:          "sudo"
 
+  - name: make an lvm volume group
+    lvg:
+      vg:                   "vgpool"
+      pvs:                  "{{ ephemeral_devices }}"
+      pesize:               "32"
+    become:                 "yes"
+    become_method:          "sudo"
+
+  - name: Make LVM Volume
+    lvol: 
+      vg:                   "vgpool" 
+      lv:                   "data"
+      size:                 "100%VG"
+    become:                 "yes" 
+    become_method:          "sudo"
+  
+  - name: Format Logical Volume
+    filesystem: 
+      fstype:               "ext4"
+      dev:                  "/dev/vgpool/data" 
+      resizefs:             "yes"
+    become:                 "yes" 
+    become_method:          "sudo"
+
+  - name: Mount Data Volume
+    mount:
+      name:                 "/mnt/data"
+      src:                  "/dev/vgpool/data"
+      state:                "mounted"
+      fstype:               "ext4"
+      opts:                 "noatime,nofail"
+    become:                 "yes" 
+    become_method:          "sudo"
+
+  - name: Fix Permissions for Data Mount
+    file: 
+      path:                 "/mnt/data" 
+      owner:                "ubuntu" 
+      group:                "ubuntu" 
+      mode:                 "0775" 
+      state:                "directory"
+      recurse:              "yes"
+    become:                 "yes" 
+    become_method:          "sudo"
+
+  - name: Create fastai local storage location
+    file: 
+      path:                 "/mnt/data/fastai" 
+      owner:                "ubuntu" 
+      group:                "ubuntu" 
+      mode:                 "0775" 
+      state:                "directory"
+      recurse:              "yes"
+    become:                 "yes" 
+    become_method:          "sudo"
+
+  - name: Create fastai local storage location
+    file: 
+      path:                 "/mnt/data/fastai/models" 
+      owner:                "ubuntu" 
+      group:                "ubuntu" 
+      mode:                 "0775" 
+      state:                "directory"
+      recurse:              "yes"
+    become:                 "yes" 
+    become_method:          "sudo"
+
+  - name: Create fastai local storage location
+    file: 
+      path:                 "/mnt/data/fastai/data" 
+      owner:                "ubuntu" 
+      group:                "ubuntu" 
+      mode:                 "0775" 
+      state:                "directory"
+      recurse:              "yes"
+    become:                 "yes" 
+    become_method:          "sudo"
+
+  - name: Create symbolic link ~/course-v3
+    file:
+      src:                  "/mnt/data/fastai"
+      dest:                 "/home/ubuntu/.fastai"
+      state:                "link"
+    become:                 "yes" 
+    become_method:          "sudo"
+
+  - name: Create symbolic link ~/data
+    file:
+      src:                  "/mnt/data"
+      dest:                 "/home/ubuntu/data"
+      state:                "link"
+    become:                 "yes" 
+    become_method:          "sudo"
+
   - name: Clone Fastai Course Work
     git:
       repo:                 "https://github.com/fastai/course-v3"
-      dest:                 "~/course-v3"
+      dest:                 "~/data/course-v3"
+
+  - name: Create symbolic link ~/course-v3
+    file:
+      src:                  "/mnt/data/course-v3"
+      dest:                 "/home/ubuntu/course-v3"
+      state:                "link"
+    become:                 "yes" 
+    become_method:          "sudo"
 
   - name: Upgrade PIP and Setuptools - as root
     pip:
@@ -422,18 +472,6 @@
       state:                "latest"
 
 # Update Conda / Install Packages
-  - name: Uninsall Conda Packages - pillow pil jpeg libtiff
-    shell: "source $HOME/.bashrc && conda uninstall -y --force pillow pil jpeg libtiff"
-    environment:
-      CONDA_INSTRUMENTATION_ENABLED: 1
-    args:
-      executable: "/bin/bash"
-
-  - name: Uninstall Pip Packages - pillow pil jpeg libtiff
-    shell: "source $HOME/.bashrc && pip uninstall -y pillow pil jpeg libtiff"
-    args:
-      executable: "/bin/bash"
-
   - name: Update Conda
     shell: "source $HOME/.bashrc && conda config --set ssl_verify no && conda update -y conda"
     environment:
@@ -441,8 +479,20 @@
     args:
       executable: "/bin/bash"
 
+  - name: Uninsall Conda Packages - pillow pil jpeg libtiff
+    shell: "source $HOME/.bashrc && conda uninstall -y --force pillow pil jpeg libtiff libjpeg-turbo"
+    environment:
+      CONDA_INSTRUMENTATION_ENABLED: 1
+    args:
+      executable: "/bin/bash"
+
+  - name: Uninstall Pip Packages - pillow pil jpeg libtiff
+    shell: "source $HOME/.bashrc && pip uninstall -y pillow pil jpeg libtiff libjpeg-turbo"
+    args:
+      executable: "/bin/bash"
+
   - name: Insall Conda Packages - pytorch cuda92
-    shell: "source $HOME/.bashrc && conda config --set ssl_verify no && conda install -y -c pytorch pytorch torchvision cuda92"
+    shell: "source $HOME/.bashrc && conda config --set ssl_verify no && conda install -y -c pytorch pytorch=1.4.0 torchvision cuda92"
     environment:
       CONDA_INSTRUMENTATION_ENABLED: 1
     args:
@@ -456,14 +506,14 @@
       executable: "/bin/bash"
 
   - name: Insall Conda Packages - libjpeg-turbo jupyter_nbextesions
-    shell: "source $HOME/.bashrc && conda config --set ssl_verify no && conda install -y -c conda-forge libjpeg-turbo jupyter_nbextensions_configurator"
+    shell: "source $HOME/.bashrc && conda config --set ssl_verify no && conda install -y -c conda-forge libjpeg-turbo"
     environment:
       CONDA_INSTRUMENTATION_ENABLED: 1
     args:
       executable: "/bin/bash"
       
   - name: Insall Pillow Packages with cc -mavx2
-    shell: "source $HOME/.bashrc && CFLAGS=\"${CFLAGS} -mavx2\" pip install --no-cache-dir --upgrade --force-reinstall --no-binary :all: --compile pillow-simd"
+    shell: "source $HOME/.bashrc && CFLAGS=\"${CFLAGS} -mavx2\" pip install --upgrade --no-cache-dir --force-reinstall --no-binary :all: --compile pillow-simd"
     args:
       executable: "/bin/bash"
 
@@ -492,7 +542,7 @@
     become:                 "yes"
     become_method:          "sudo"
 
-# Software Update
+#Software Update
   - name: Upgrade all packages to the latest version
     apt:
       update_cache:         "yes" 
@@ -506,8 +556,20 @@
     become:                 "yes"
     become_method:          "sudo"
 
+  - name: Remove Knownhosts Lines
+    local_action:
+      module: known_hosts
+      path:                 "~/.ssh/known_hosts"
+      name:                 "fastai.{{ domain_name }}"
+      state:                "absent"
+
   - name: Wait for port 22 to be ready
-    local_action: wait_for port=22 host="{{ ansible_ssh_host }}"  search_regex=OpenSSH delay=5 timeout=600 sleep=5
+    local_action: wait_for port="22" host="{{ ansible_ssh_host }}"  search_regex="OpenSSH" delay="3" timeout="600" sleep="5"
+
+  - name: Insall Pillow Packages with cc -mavx2
+    shell: "source $HOME/.bashrc && CFLAGS=\"${CFLAGS} -mavx2\" pip install --upgrade --no-cache-dir --force-reinstall --no-binary :all: --compile pillow-simd"
+    args:
+      executable: "/bin/bash"
 
   - name: Testing for Preformance
     shell: "source $HOME/.bashrc && python -c \"import fastai.utils.collect_env; fastai.utils.collect_env.check_perf()\""
@@ -523,3 +585,5 @@
   - name: How to Connect
     debug:
       msg: "ssh -i ./{{ ssh_keyname }}_{{ hostvars['localhost']['aws_region'] }}_key.pem -L localhost:8888:localhost:8888 {{ fastai_user }}@fastai.{{ domain_name }}"
+
+
